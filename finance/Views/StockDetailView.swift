@@ -111,6 +111,7 @@ struct StockDetailView: View {
                 }
                 statsSection
                 predictionOutlookSection
+                longTermOutlookSection
                 companyInfoSection
                 aboutSection
             }
@@ -456,6 +457,167 @@ struct StockDetailView: View {
                 .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    // MARK: - Long-Term Outlook (1–10 Years)
+
+    private var longTermOutlookSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "calendar.badge.clock")
+                    .foregroundStyle(.indigo)
+                Text("Long-Term Outlook")
+                    .font(.headline)
+                Spacer()
+                if vm.isLoadingLongTerm {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
+            }
+
+            if vm.isLoadingLongTerm && vm.longTermPredictions.isEmpty {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Running multi-year analysis...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding()
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else if vm.longTermPredictions.isEmpty {
+                Text("Long-term prediction unavailable")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                longTermPredictionCard
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var longTermPredictionCard: some View {
+        let predictions = vm.longTermPredictions
+        if let first = predictions.first {
+        VStack(spacing: 0) {
+            // Header — signal badge derived from the shared engine score
+            HStack(spacing: 10) {
+                Image(systemName: first.prediction.signal.icon)
+                    .font(.title3)
+                    .foregroundStyle(first.prediction.signal.color)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(first.prediction.signal.rawValue)
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                        .foregroundStyle(first.prediction.signal.color)
+                    Text("Technical signal · \(Int(abs(first.prediction.score)))% strength")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                // Confidence pill
+                let pct = Int(first.prediction.confidence * 100)
+                Text("\(pct)% conf.")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.indigo.opacity(0.12))
+                    .foregroundStyle(.indigo)
+                    .clipShape(Capsule())
+            }
+            .padding(14)
+
+            Divider()
+                .padding(.horizontal, 14)
+
+            // Year-by-year rows
+            ForEach(Array(predictions.enumerated()), id: \.element.id) { index, tf in
+                let isUp = tf.prediction.predictedChange >= 0
+                let isLast = index == predictions.count - 1
+
+                HStack(spacing: 12) {
+                    // Year label
+                    Text(tf.label)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                        .frame(width: 60, alignment: .leading)
+
+                    // Confidence bar
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color(.systemGray5))
+                                .frame(height: 6)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(isUp ? Color.green.opacity(0.7) : Color.red.opacity(0.7))
+                                .frame(
+                                    width: geo.size.width * CGFloat(tf.prediction.confidence),
+                                    height: 6
+                                )
+                        }
+                    }
+                    .frame(height: 6)
+
+                    Spacer()
+
+                    // Price & change
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(tf.prediction.predictedPrice, format: .currency(code: "USD"))
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+
+                        Text(String(format: "%+.1f%%", tf.prediction.predictedChangePercent))
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundStyle(isUp ? .green : .red)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+                if !isLast {
+                    Divider()
+                        .padding(.horizontal, 14)
+                }
+            }
+
+            Divider()
+                .padding(.horizontal, 14)
+
+            // Reasoning snippet
+            if let reason = predictions.first?.prediction.reasons.first {
+                Text(reason)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+            }
+        }
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
+
+        HStack(spacing: 4) {
+            Image(systemName: "info.circle")
+                .font(.caption2)
+            Text("Projections compound technical signals with an ~8% historical baseline. Not financial advice.")
+                .font(.caption2)
+        }
+        .foregroundStyle(.tertiary)
+        } // end if let first
     }
 
     private var companyInfoSection: some View {
