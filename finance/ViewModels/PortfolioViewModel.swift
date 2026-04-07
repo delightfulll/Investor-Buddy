@@ -39,9 +39,15 @@ final class PortfolioViewModel: ObservableObject {
             return
         }
         do {
-            watchlistStocks = try await stockService.fetchStocks(symbols: symbols)
+            let fetched = try await stockService.fetchStocks(symbols: symbols)
+            // Only replace the list when we actually got data back.
+            if !fetched.isEmpty {
+                watchlistStocks = fetched
+            }
         } catch {
-            watchlistStocks = []
+            // Network error (e.g. rate-limiting from concurrent requests) —
+            // keep the existing list visible rather than blanking the screen.
+            print("Watchlist refresh failed, keeping existing data: \(error)")
         }
     }
 }

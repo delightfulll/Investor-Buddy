@@ -13,6 +13,8 @@ struct SearchView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var addedSymbol: String?
     @State private var showAddedConfirmation = false
+    @State private var navigatingToStock: StockData?
+    @State private var isFetchingStock = false
 
     var body: some View {
         NavigationStack {
@@ -55,6 +57,28 @@ struct SearchView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Search")
+            .navigationDestination(item: $navigatingToStock) { stock in
+                StockDetailView(stock: stock)
+            }
+            .overlay {
+                if isFetchingStock {
+                    ZStack {
+                        Color.black.opacity(0.25)
+                            .ignoresSafeArea()
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.4)
+                                .tint(.white)
+                            Text("Loading...")
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(24)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+            }
             .overlay(alignment: .bottom) {
                 if showAddedConfirmation, let symbol = addedSymbol {
                     HStack(spacing: 8) {
@@ -169,40 +193,51 @@ struct SearchView: View {
 
     private var searchResultsView: some View {
         List(searchVM.searchResults) { result in
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(result.symbol)
-                        .font(.headline)
-                    Text(result.displayName)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if let exchange = result.exchange {
-                        Text(exchange)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+            HStack(spacing: 12) {
+                Button {
+                    Task {
+                        isFetchingStock = true
+                        if let stock = try? await StockService.shared.fetchStock(symbol: result.symbol) {
+                            navigatingToStock = stock
+                        }
+                        isFetchingStock = false
                     }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(result.symbol)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Text(result.displayName)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            if let exchange = result.exchange {
+                                Text(exchange)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer()
-                if searchVM.isInWatchlist(result.symbol) {
-                    Button {
-                        searchVM.removeFromWatchlist(result.symbol)
-                    } label: {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.green)
+                .buttonStyle(.plain)
+
+                Button {
+                    Task {
+                        isFetchingStock = true
+                        if let stock = try? await StockService.shared.fetchStock(symbol: result.symbol) {
+                            navigatingToStock = stock
+                        }
+                        isFetchingStock = false
                     }
-                } else {
-                    Button {
-                        searchVM.addToWatchlist(result.symbol)
-                        addedSymbol = result.symbol
-                        showAddedConfirmation = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.blue)
-                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
+                .buttonStyle(.plain)
             }
             .padding(.vertical, 4)
         }

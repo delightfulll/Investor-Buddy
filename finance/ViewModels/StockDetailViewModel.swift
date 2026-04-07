@@ -171,7 +171,7 @@ final class StockDetailViewModel: ObservableObject {
                     let history = try await stockService.fetchPriceHistory(
                         symbol: stock.symbol, range: r.range, interval: r.interval
                     )
-                    if history.count >= 20 {
+                    if history.count >= 10 {
                         windows.append((label: outlook.label, weight: r.weight, history: history))
                     }
                 } catch {
@@ -240,35 +240,48 @@ final class StockDetailViewModel: ObservableObject {
         isLoadingLongTerm = true
         defer { isLoadingLongTerm = false }
 
-        // Prefer 10Y data so the CAGR calculation spans a full market cycle.
-        // Fall back gracefully to shorter ranges when unavailable.
-        let longTermRanges: [(range: String, interval: String, weight: Double)] = [
+        // Tier 1 – ideal: multi-year weekly bars covering a full market cycle.
+        let tier1Ranges: [(range: String, interval: String, weight: Double)] = [
             ("10y", "1wk", 0.50),
             ("5y",  "1wk", 0.35),
             ("2y",  "1wk", 0.15)
         ]
+        // Tier 2 – new stocks (<2 years): annual / semi-annual daily bars.
+        let tier2Ranges: [(range: String, interval: String, weight: Double)] = [
+            ("1y",  "1d", 0.50),
+            ("6mo", "1d", 0.35),
+            ("3mo", "1d", 0.15)
+        ]
+        // Tier 3 – very new stocks (<3 months): use whatever daily / intraday bars exist.
+        let tier3Ranges: [(range: String, interval: String, weight: Double)] = [
+            ("1mo", "1d",  0.60),
+            ("5d",  "15m", 0.40)
+        ]
 
         var windows: [(label: String, weight: Double, history: [PriceDataPoint])] = []
-        for r in longTermRanges {
-            do {
-                let history = try await stockService.fetchPriceHistory(
-                    symbol: stock.symbol, range: r.range, interval: r.interval
-                )
-                if history.count >= 20 {
-                    windows.append((label: "Long-Term", weight: r.weight, history: history))
+
+        for tierRanges in [tier1Ranges, tier2Ranges, tier3Ranges] {
+            if !windows.isEmpty { break }
+            for r in tierRanges {
+                do {
+                    let history = try await stockService.fetchPriceHistory(
+                        symbol: stock.symbol, range: r.range, interval: r.interval
+                    )
+                    if history.count >= 10 {
+                        windows.append((label: "Long-Term", weight: r.weight, history: history))
+                    }
+                } catch {
+                    print("Long-term history fetch \(r.range) failed for \(stock.symbol): \(error)")
                 }
-            } catch {
-                print("Long-term history fetch \(r.range) failed for \(stock.symbol): \(error)")
             }
         }
 
         guard !windows.isEmpty else { return }
 
         // ── Historical CAGR ───────────────────────────────────────────────
-        // Use the longest available window so the CAGR reflects a full
-        // market cycle rather than a single bull/bear leg.
-        // This is the key anchor: copper uses copper's real trend,
-        // not a generic 8% equity baseline.
+        // Use the longest available window so the CAGR reflects the real trend.
+        // For new stocks with < 3 months of history we fall back to the 8%
+        // equity baseline; historyTrust then blends accordingly.
         let longestHistory = windows.max(by: { $0.history.count < $1.history.count })!.history
 
         let historicalCAGR: Double = {
@@ -279,32 +292,34 @@ final class StockDetailViewModel: ObservableObject {
                   let lastDate   = longestHistory.last?.date else { return 0.08 }
 
             let elapsedYears = lastDate.timeIntervalSince(firstDate) / (365.25 * 24 * 3_600)
-            guard elapsedYears >= 1.0 else { return 0.08 }
+            // Need at least ~3 months before we try to annualise returns.
+            guard elapsedYears >= 0.25 else { return 0.08 }
 
             let rawCAGR = pow(lastClose / firstClose, 1.0 / elapsedYears) - 1.0
-            // Clamp to sane range: handles penny stocks and 10-bagger ETFs alike
-            return max(-0.25, min(0.45, rawCAGR))
+            // Clamp to sane range: handles penny stocks and 10-bagger ETFs alike.
+            // For partial years the annualised figure can be extreme, so apply a
+            // tighter cap when the window is short.
+            let cap = elapsedYears < 1.0 ? 0.60 : 0.45
+            return max(-0.25, min(cap, rawCAGR))
         }()
 
-        // How many years of real history we have (caps at 10 for trust weight)
+        // How many years of real history we have (caps at 10 for trust weight).
         let historyYears: Double = {
             guard let f = longestHistory.first?.date,
-                  let l = longestHistory.last?.date else { return 1 }
+                  let l = longestHistory.last?.date else { return 0 }
             return min(10, l.timeIntervalSince(f) / (365.25 * 24 * 3_600))
         }()
 
-        // If history is short (e.g. a 2-year-old ETF in a bull run), blend its
-        // CAGR with the generic ~8% baseline so we don't over-extrapolate.
+        // Blend the asset's own CAGR with the generic ~8% equity baseline.
+        // Short history → low trust → baseline dominates (correct for new stocks).
         let genericBaseline = 0.08
         let historyTrust    = min(1.0, historyYears / 5.0)   // full trust at 5+ yrs
         let anchoredCAGR    = historicalCAGR * historyTrust
                             + genericBaseline * (1.0 - historyTrust)
 
         // ── Engine signal pass ────────────────────────────────────────────
-        // All existing indicators fire at longTerm horizon (longer MA/RSI/BB
-        // periods). The engine score is used only as a ± CAGR adjustment,
-        // NOT as the primary rate — fixing the ATR-scaling bug where a bearish
-        // weekly signal would compound to copper at 9% of current price.
+        // All indicators fire at longTerm horizon. The score is used only as a
+        // ±10%/yr CAGR adjustment — not as the primary rate.
         let basePrediction = StockPredictionEngine.aggregatePrediction(
             symbol: stock.symbol,
             name:   stock.name,
@@ -313,48 +328,67 @@ final class StockDetailViewModel: ObservableObject {
             horizon:        .longTerm
         )
 
-        guard !basePrediction.reasons.contains("Insufficient data for analysis") else { return }
+        // For new stocks the engine may return a neutral / low-confidence signal.
+        // We still build projections — they will be anchored to the baseline CAGR
+        // with zero technical adjustment and lower confidence.
+        let hasEngineSignal = !basePrediction.reasons.contains("Insufficient data for analysis")
+                           && !basePrediction.reasons.contains("No data available")
 
         // Engine score in [-100, +100] → annual CAGR adjustment of ±10%.
-        // A Strong Buy adds up to +10% per year; Strong Sell subtracts up to -10%.
-        let signalAdjustment = (basePrediction.score / 100.0) * 0.10
+        let signalAdjustment = hasEngineSignal ? (basePrediction.score / 100.0) * 0.10 : 0.0
 
         // ── Per-year projections ──────────────────────────────────────────
         let cagrPct = String(format: "%.1f", anchoredCAGR * 100)
-        let cagrReason = "Historical CAGR (\(Int(historyYears))Y data): \(anchoredCAGR >= 0 ? "+" : "")\(cagrPct)%/yr"
+        let histYrLabel = historyYears >= 1.0
+            ? "\(Int(historyYears))Y"
+            : String(format: "%.0fmo", historyYears * 12)
+        let cagrReason = historyYears >= 0.25
+            ? "Historical CAGR (\(histYrLabel) data): \(anchoredCAGR >= 0 ? "+" : "")\(cagrPct)%/yr"
+            : "Insufficient history — projection uses \(cagrPct)% market baseline"
 
         var results: [TimeframePrediction] = []
 
         for year in 1...10 {
             let years = Double(year)
 
-            // Signal influence fades as the horizon extends — current RSI tells
-            // us little about copper prices in 8 years, but the 5-year trend does.
-            // signalWeight: ~0.91 at year 1, ~0.09 at year 10
-            let signalWeight     = max(0.05, 1.0 - (years / 11.0))
-            let effectiveCAGR    = anchoredCAGR + signalAdjustment * signalWeight
-            let clampedCAGR      = max(-0.30, min(0.50, effectiveCAGR))
-            let scaledPrice      = max(stock.price * 0.01, stock.price * pow(1.0 + clampedCAGR, years))
+            // Signal influence fades with horizon.  signalWeight: ~0.91 yr1 → ~0.09 yr10.
+            let signalWeight  = max(0.05, 1.0 - (years / 11.0))
+            let effectiveCAGR = anchoredCAGR + signalAdjustment * signalWeight
+            let clampedCAGR   = max(-0.30, min(0.50, effectiveCAGR))
+            let scaledPrice   = max(stock.price * 0.01, stock.price * pow(1.0 + clampedCAGR, years))
 
-            // Confidence shrinks with both prediction horizon and signal uncertainty
+            // Confidence shrinks with horizon and is further reduced when the
+            // engine had too little data to produce a technical signal.
+            let baseConfidence   = hasEngineSignal ? basePrediction.confidence : 0.30
             let horizonDecay     = max(0.10, 1.0 - (years / 12.0))
-            let yearConfidence   = max(0.10, basePrediction.confidence * horizonDecay)
+            let yearConfidence   = max(0.10, baseConfidence * horizonDecay)
 
             let label = year == 1 ? "1 Year" : "\(year) Years"
 
-            // Prepend the CAGR anchor reason so users see what's driving the projection
-            var reasons = basePrediction.reasons
-            if !reasons.contains(cagrReason) { reasons.insert(cagrReason, at: 1) }
+            var reasons: [String]
+            if hasEngineSignal {
+                reasons = basePrediction.reasons
+                if !reasons.contains(cagrReason) { reasons.insert(cagrReason, at: 1) }
+            } else {
+                reasons = [
+                    cagrReason,
+                    "Limited price history — technical indicators unavailable",
+                    "Projection anchored to \(String(format: "%.0f", genericBaseline * 100))% annual market baseline"
+                ]
+            }
+
+            let yearSignal = hasEngineSignal ? basePrediction.signal : .hold
+            let yearScore  = hasEngineSignal ? basePrediction.score  : 0.0
 
             let yearPrediction = StockPrediction(
-                symbol:         basePrediction.symbol,
-                name:           basePrediction.name,
+                symbol:         stock.symbol,
+                name:           stock.name,
                 sector:         basePrediction.sector,
-                currentPrice:   basePrediction.currentPrice,
+                currentPrice:   stock.price,
                 predictedPrice: scaledPrice,
-                signal:         basePrediction.signal,
+                signal:         yearSignal,
                 confidence:     yearConfidence,
-                score:          basePrediction.score,
+                score:          yearScore,
                 reasons:        reasons
             )
 

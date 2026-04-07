@@ -84,12 +84,14 @@ struct StockDetailView: View {
     let stock: StockData
     @StateObject private var vm: StockDetailViewModel
     @StateObject private var accountVM = AccountViewModel.shared
+    @ObservedObject private var watchlistManager = WatchlistManager.shared
     @State private var showTradeSheet = false
     @State private var showFullScreenChart = false
     @State private var draggedPrice: Double?
     @State private var draggedDate: Date?
     @State private var isDragging = false
     @State private var showFullDescription = false
+    @State private var showWatchlistConfirmation = false
 
     init(stock: StockData) {
         self.stock = stock
@@ -771,18 +773,74 @@ struct StockDetailView: View {
     }
 
     private var tradeButton: some View {
-        Button {
-            showTradeSheet = true
-        } label: {
-            Text("Trade")
-                .font(.headline)
-                .foregroundStyle(.white)
+        let inWatchlist = watchlistManager.isInWatchlist(stock.symbol)
+        return HStack(spacing: 12) {
+            Button {
+                if inWatchlist {
+                    watchlistManager.removeSymbol(stock.symbol)
+                } else {
+                    watchlistManager.addSymbol(stock.symbol)
+                    showWatchlistConfirmation = true
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: inWatchlist ? "star.fill" : "star")
+                        .font(.subheadline)
+                    Text(inWatchlist ? "Watchlisted" : "Watchlist")
+                        .font(.headline)
+                }
+                .foregroundStyle(inWatchlist ? Color.orange : Color.blue)
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(Color.blue)
+                .background(inWatchlist ? Color.orange.opacity(0.12) : Color.blue.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(inWatchlist ? Color.orange.opacity(0.4) : Color.blue.opacity(0.3), lineWidth: 1)
+                )
+            }
+
+            Button {
+                showTradeSheet = true
+            } label: {
+                Text("Trade")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.vertical, 12)
         .background(Color(.systemGroupedBackground))
+        .overlay(alignment: .top) {
+            if showWatchlistConfirmation {
+                HStack(spacing: 8) {
+                    Image(systemName: "star.fill")
+                        .foregroundStyle(.white)
+                    Text("\(stock.symbol) added to Watchlist")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color.orange)
+                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: -4)
+                .offset(y: -64)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        withAnimation(.easeInOut) {
+                            showWatchlistConfirmation = false
+                        }
+                    }
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: showWatchlistConfirmation)
     }
 }

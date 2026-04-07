@@ -293,8 +293,8 @@ actor StockService {
         
         let decoded = try JSONDecoder().decode(YahooSearchResponse.self, from: data)
         
-        // Filter to only show stocks and ETFs (exclude crypto, futures, etc.)
-        let validTypes = ["EQUITY", "ETF", "MUTUALFUND"]
+        // Filter to only show stocks, ETFs, and crypto
+        let validTypes = ["EQUITY", "ETF", "MUTUALFUND", "CRYPTOCURRENCY"]
         let filtered = decoded.quotes.filter { result in
             validTypes.contains(result.quoteType ?? "")
         }
@@ -432,12 +432,14 @@ actor StockService {
         }
     }
     
-    // MARK: - Fetch Precious Metals
+    // MARK: - Fetch Metals & Commodities
     func fetchMetals() async throws -> [MetalQuote] {
         let metalSymbols: [(ticker: String, name: String, emoji: String, unit: String)] = [
-            ("GC=F", "Gold", "🥇", "/oz"),
-            ("SI=F", "Silver", "🥈", "/oz"),
-            ("PL=F", "Platinum", "⚪", "/oz")
+            ("GC=F", "Gold",      "🥇", "/oz"),
+            ("SI=F", "Silver",    "🥈", "/oz"),
+            ("PL=F", "Platinum",  "⚪", "/oz"),
+            ("HG=F", "Copper",    "🟤", "/lb"),
+            ("PA=F", "Palladium", "🔘", "/oz")
         ]
 
         return await withTaskGroup(of: MetalQuote?.self, returning: [MetalQuote].self) { group in
@@ -459,7 +461,40 @@ actor StockService {
             for await result in group {
                 if let quote = result { quotes.append(quote) }
             }
-            return quotes
+            // Preserve insertion order (taskGroup returns in completion order)
+            return metalSymbols.compactMap { m in quotes.first { $0.ticker == m.ticker } }
+        }
+    }
+
+    // MARK: - Fetch Cryptocurrencies
+    func fetchCryptos() async throws -> [MetalQuote] {
+        let cryptoSymbols: [(ticker: String, name: String, emoji: String)] = [
+            ("BTC-USD", "Bitcoin",  "₿"),
+            ("ETH-USD", "Ethereum", "Ξ"),
+            ("SOL-USD", "Solana",   "◎"),
+            ("BNB-USD", "BNB",      "🔶")
+        ]
+
+        return await withTaskGroup(of: MetalQuote?.self, returning: [MetalQuote].self) { group in
+            for crypto in cryptoSymbols {
+                group.addTask {
+                    guard let stock = try? await self.fetchStock(symbol: crypto.ticker) else { return nil }
+                    return MetalQuote(
+                        ticker: crypto.ticker,
+                        name: crypto.name,
+                        symbol: crypto.emoji,
+                        price: stock.price,
+                        change: stock.change,
+                        changePercent: stock.changePercent,
+                        unit: ""
+                    )
+                }
+            }
+            var quotes: [MetalQuote] = []
+            for await result in group {
+                if let quote = result { quotes.append(quote) }
+            }
+            return cryptoSymbols.compactMap { c in quotes.first { $0.ticker == c.ticker } }
         }
     }
     

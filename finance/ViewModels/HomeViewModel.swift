@@ -15,9 +15,11 @@ final class HomeViewModel: ObservableObject {
     @Published var topGainers: [MoverStock] = []
     @Published var topLosers: [MoverStock] = []
     @Published var metals: [MetalQuote] = []
+    @Published var cryptos: [MetalQuote] = []
     @Published var isLoading = true
     @Published var isLoadingMovers = true
     @Published var isLoadingMetals = true
+    @Published var isLoadingCrypto = true
     @Published var lastUpdated: Date?
 
     private let stockService: StockService
@@ -39,6 +41,7 @@ final class HomeViewModel: ObservableObject {
             group.addTask { await self.loadStocks() }
             group.addTask { await self.loadMarketMovers() }
             group.addTask { await self.loadMetals() }
+            group.addTask { await self.loadCryptos() }
         }
     }
 
@@ -83,5 +86,25 @@ final class HomeViewModel: ObservableObject {
             // keep previous metals
         }
         isLoadingMetals = false
+    }
+
+    func loadCryptos() async {
+        do {
+            let fetched = try await stockService.fetchCryptos()
+            if !fetched.isEmpty {
+                cryptos = fetched
+            } else if cryptos.isEmpty {
+                // Got an empty response — retry once after a short pause
+                // (Yahoo can return empty results under brief rate-limiting).
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let retry = try await stockService.fetchCryptos()
+                if !retry.isEmpty { cryptos = retry }
+            }
+        } catch {
+            // Transient network/rate-limit error — keep whatever is already
+            // displayed so the section never goes blank mid-session.
+            print("Crypto refresh failed, keeping existing data: \(error)")
+        }
+        isLoadingCrypto = false
     }
 }

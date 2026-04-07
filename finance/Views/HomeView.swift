@@ -30,8 +30,9 @@ struct HomeView: View {
                     accountsSection
                     buyingPowerSection
                     recommendedStocksSection
+                    cryptoSection
                     marketMoversSection
-                    preciousMetalsSection
+                    metalsSection
                     watchlistSection
                     riskDisclaimerSection
                 }
@@ -72,10 +73,18 @@ struct HomeView: View {
         .task {
             await homeVM.loadData()
             if !recommendVM.hasLoaded {
+                // Brief pause so all home-screen data (crypto, metals, quotes)
+                // finishes rendering before the recommendation engine starts
+                // making its own batch of Yahoo requests.
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 s
                 await recommendVM.loadRecommendations()
             }
         }
         .onReceive(refreshTimer) { _ in
+            // Don't refresh market data while the recommendation engine is
+            // actively fetching — they share the same API connection pool and
+            // competing requests trigger Yahoo rate-limiting.
+            guard !recommendVM.isLoading else { return }
             Task { await homeVM.loadData() }
         }
     }
@@ -684,22 +693,96 @@ struct HomeView: View {
         .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
     }
 
-    private var preciousMetalsSection: some View {
+    private var cryptoSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Precious Metals")
-                .font(.headline)
-            if homeVM.isLoadingMetals && homeVM.metals.isEmpty {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                }
-                .padding()
+            HStack {
+                Text("₿")
+                    .font(.headline)
+                Text("Crypto")
+                    .font(.headline)
+            }
+            if homeVM.isLoadingCrypto && homeVM.cryptos.isEmpty {
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .padding()
+            } else if homeVM.cryptos.isEmpty {
+                Text("Unable to load crypto prices")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                let columns = [
-                    GridItem(.flexible(), spacing: 12),
-                    GridItem(.flexible(), spacing: 12)
-                ]
+                let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(homeVM.cryptos) { crypto in
+                        NavigationLink {
+                            StockDetailView(stock: crypto.asStockData)
+                        } label: {
+                            cryptoCard(crypto: crypto)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func cryptoCard(crypto: MetalQuote) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(crypto.symbol)
+                    .font(.title2)
+                Text(crypto.name)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            Text(crypto.price, format: .currency(code: "USD"))
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundStyle(.orange)
+            HStack(spacing: 2) {
+                Image(systemName: crypto.change >= 0 ? "arrow.up.right" : "arrow.down.right")
+                    .font(.caption2)
+                Text(String(format: "%+.2f (%.2f%%)", crypto.change, abs(crypto.changePercent)))
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .foregroundStyle(crypto.change >= 0 ? .green : .red)
+            Text(crypto.ticker)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(
+            LinearGradient(
+                colors: [Color.orange.opacity(0.06), Color.white],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.15), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
+    }
+
+    private var metalsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Metals & Commodities")
+                    .font(.headline)
+            }
+            if homeVM.isLoadingMetals && homeVM.metals.isEmpty {
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .padding()
+            } else {
+                let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(homeVM.metals) { metal in
                         NavigationLink {
@@ -735,9 +818,11 @@ struct HomeView: View {
                     .fontWeight(.medium)
             }
             .foregroundStyle(metal.change >= 0 ? .green : .red)
-            Text(metal.unit)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if !metal.unit.isEmpty {
+                Text(metal.unit)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()

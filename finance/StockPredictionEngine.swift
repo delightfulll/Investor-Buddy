@@ -113,7 +113,7 @@ struct StockPredictionEngine {
         priceHistory: [PriceDataPoint],
         horizon: Horizon = .shortTerm
     ) -> StockPrediction {
-        guard priceHistory.count >= 20 else {
+        guard priceHistory.count >= 10 else {
             return StockPrediction(
                 symbol: symbol, name: name, sector: sector,
                 currentPrice: currentPrice, predictedPrice: currentPrice,
@@ -325,7 +325,7 @@ struct StockPredictionEngine {
         var allConfidences: [Double] = []
 
         for window in historyWindows {
-            guard window.history.count >= 20 else { continue }
+            guard window.history.count >= 10 else { continue }
             let prediction = predict(
                 symbol: symbol, name: name, sector: sector,
                 currentPrice: currentPrice, priceHistory: window.history,
